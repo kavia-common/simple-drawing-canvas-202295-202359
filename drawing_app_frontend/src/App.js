@@ -299,29 +299,121 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundColor]);
 
-  // Keyboard shortcuts: Ctrl/Cmd+Z for undo, Ctrl/Cmd+Shift+Z for redo (also Ctrl/Cmd+Y).
+  const clampBrushSize = (val) => Math.max(1, Math.min(40, val));
+
+  const cycleTool = () => {
+    setActiveTool((t) => (t === TOOL.BRUSH ? TOOL.ERASER : TOOL.BRUSH));
+  };
+
+  // Keyboard shortcuts:
+  // - Undo/Redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y (existing behavior)
+  // - Tool toggle: B (Brush), E (Eraser), X (Toggle)
+  // - Clear: Delete/Backspace (when not typing), or Ctrl/Cmd+K
+  // - Save: Ctrl/Cmd+S
+  // - Brush size: [ / ] (decrease/increase)
+  // - Quick colors: 1-8 (palette order) when Brush tool is active
   useEffect(() => {
+    const isTypingTarget = (target) => {
+      if (!(target instanceof Element)) return false;
+      const tag = target.tagName?.toLowerCase?.() ?? "";
+      return (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        target.isContentEditable === true
+      );
+    };
+
     const onKeyDown = (e) => {
+      // Avoid hijacking shortcuts while typing in form controls.
+      // (Canvas has tabindex=0, so it can receive key events too.)
+      if (isTypingTarget(e.target)) return;
+
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const mod = isMac ? e.metaKey : e.ctrlKey;
 
-      if (!mod) return;
-
       const key = e.key.toLowerCase();
-      const isUndo = key === "z" && !e.shiftKey;
-      const isRedo = (key === "z" && e.shiftKey) || key === "y";
 
-      if (!isUndo && !isRedo) return;
+      // --- Undo/redo (keep existing behavior and precedence) ---
+      if (mod) {
+        const isUndo = key === "z" && !e.shiftKey;
+        const isRedo = (key === "z" && e.shiftKey) || key === "y";
 
-      e.preventDefault();
-      if (isUndo) undo();
-      if (isRedo) redo();
+        if (isUndo || isRedo) {
+          e.preventDefault();
+          if (isUndo) undo();
+          if (isRedo) redo();
+          return;
+        }
+      }
+
+      // --- Save ---
+      if (mod && key === "s") {
+        e.preventDefault();
+        saveAsImage();
+        return;
+      }
+
+      // --- Clear ---
+      // Backspace/Delete are browser navigation keys in some contexts; preventDefault.
+      if (key === "backspace" || key === "delete") {
+        e.preventDefault();
+        clearCanvas();
+        return;
+      }
+      // Alternate clear shortcut: Ctrl/Cmd+K (common "command palette" style, but safe here)
+      if (mod && key === "k") {
+        e.preventDefault();
+        clearCanvas();
+        return;
+      }
+
+      // --- Tool selection/toggle ---
+      if (key === "b") {
+        e.preventDefault();
+        setActiveTool(TOOL.BRUSH);
+        return;
+      }
+      if (key === "e") {
+        e.preventDefault();
+        setActiveTool(TOOL.ERASER);
+        return;
+      }
+      if (key === "x") {
+        e.preventDefault();
+        cycleTool();
+        return;
+      }
+
+      // --- Brush size adjustments ---
+      // Keep these unmodified so they are quick to use while drawing.
+      if (key === "[") {
+        e.preventDefault();
+        setBrushSize((s) => clampBrushSize(s - 1));
+        return;
+      }
+      if (key === "]") {
+        e.preventDefault();
+        setBrushSize((s) => clampBrushSize(s + 1));
+        return;
+      }
+
+      // --- Quick palette colors ---
+      // 1..8 selects palette color (only when Brush is active)
+      if (!mod && !e.shiftKey && key.length === 1 && key >= "1" && key <= "8") {
+        if (activeTool !== TOOL.BRUSH) return;
+        const idx = Number(key) - 1;
+        const color = palette[idx]?.value;
+        if (!color) return;
+        e.preventDefault();
+        setStrokeColor(color);
+      }
     };
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeTool, palette, saveAsImage]);
 
   const getPointFromEvent = (evt) => {
     const canvas = canvasRef.current;
@@ -661,16 +753,28 @@ function App() {
                 >
                   Redo
                 </button>
-                <button type="button" className="btn secondary" onClick={clearCanvas}>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  onClick={clearCanvas}
+                  title="Clear (Del/Backspace)"
+                >
                   Clear
                 </button>
-                <button type="button" className="btn primary" onClick={saveAsImage}>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={saveAsImage}
+                  title="Save (Ctrl/Cmd+S)"
+                >
                   Save PNG
                 </button>
               </div>
               <div className="toolMeta">
                 <span className="toolMetaText">
-                  Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z)
+                  Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z), Save (Ctrl/Cmd+S),
+                  Clear (Del/Backspace), Brush (B), Eraser (E), Toggle tool (X), Size ([ / ]),
+                  Colors (1–8)
                 </span>
               </div>
             </div>
