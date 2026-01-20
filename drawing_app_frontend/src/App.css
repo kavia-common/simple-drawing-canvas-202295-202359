@@ -361,6 +361,11 @@
   cursor: cell;
 }
 
+/* Fill tool cursor: indicate click-based action */
+.canvas.fillCursor {
+  cursor: copy;
+}
+
 .canvasHelp {
   margin-top: 10px;
   font-size: 12px;

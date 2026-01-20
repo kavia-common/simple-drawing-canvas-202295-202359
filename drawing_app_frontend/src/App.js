@@ -9,7 +9,7 @@ import "./App.css";
  *
  * Eraser implementation:
  * - Uses canvas compositing: destination-out removes pixels from existing content.
- * - Works best with a non-transparent background. We keep a white background on init/clear.
+ * - Works best with a non-transparent background. We keep a background on init/clear.
  *
  * Undo/redo implementation notes:
  * - We store snapshots as ImageData so they are resolution-independent relative to the actual canvas buffer.
@@ -22,6 +22,11 @@ import "./App.css";
  *   2) On pointer move, restore base snapshot then draw the current shape on top.
  *   3) On pointer up/cancel, draw final shape once and commit a history snapshot.
  * - This ensures shapes integrate cleanly with undo/redo and do not permanently paint intermediate previews.
+ *
+ * Fill (paint bucket) tool notes:
+ * - Uses a flood-fill on the current canvas bitmap.
+ * - Integrates with background: because background is painted "behind" using destination-over
+ *   and baked into snapshots, filled regions match what the user sees.
  */
 
 const TOOL = Object.freeze({
@@ -30,10 +35,16 @@ const TOOL = Object.freeze({
   LINE: "line",
   RECT: "rect",
   CIRCLE: "circle",
+  FILL: "fill",
 });
 
 const HISTORY = Object.freeze({
   MAX: 60,
+});
+
+const FILL = Object.freeze({
+  // Tolerance for matching near-equal colors (0..255). This helps fill feel natural with antialiasing.
+  DEFAULT_TOLERANCE: 24,
 });
 
 // PUBLIC_INTERFACE
@@ -69,6 +80,9 @@ function App() {
   // - LINE is always stroke-only.
   const [shapeFillMode, setShapeFillMode] = useState(/** @type {"stroke" | "fill"} */ ("stroke"));
 
+  // Fill tool options
+  const [fillTolerance, setFillTolerance] = useState(FILL.DEFAULT_TOLERANCE);
+
   // Canvas background color (fill). This is baked into exports so saved PNGs match what users see.
   const [backgroundColor, setBackgroundColor] = useState("#ffffff");
 
@@ -101,6 +115,7 @@ function App() {
     () => [
       { id: TOOL.BRUSH, label: "Brush", hint: "Freehand draw" },
       { id: TOOL.ERASER, label: "Eraser", hint: "Erase pixels" },
+      { id: TOOL.FILL, label: "Fill", hint: "Click to flood fill an area" },
       { id: TOOL.LINE, label: "Line", hint: "Draw a straight line" },
       { id: TOOL.RECT, label: "Rect", hint: "Draw a rectangle (stroke or fill)" },
       { id: TOOL.CIRCLE, label: "Circle", hint: "Draw a circle (stroke or fill)" },
@@ -317,6 +332,7 @@ function App() {
   }, [backgroundColor]);
 
   const clampBrushSize = (val) => Math.max(1, Math.min(40, val));
+  const clampByte = (val) => Math.max(0, Math.min(255, val | 0));
 
   const cycleTool = () => {
     setActiveTool((t) => (t === TOOL.BRUSH ? TOOL.ERASER : TOOL.BRUSH));
@@ -330,6 +346,8 @@ function App() {
         return "Brush";
       case TOOL.ERASER:
         return "Eraser";
+      case TOOL.FILL:
+        return "Fill";
       case TOOL.LINE:
         return "Line";
       case TOOL.RECT:
@@ -374,12 +392,12 @@ function App() {
 
   // Keyboard shortcuts:
   // - Undo/Redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y
-  // - Tool selection: B (Brush), E (Eraser), X (Toggle between Brush/Eraser)
+  // - Tool selection: B (Brush), E (Eraser), F (Fill), X (Toggle between Brush/Eraser)
   // - Shapes: L (Line), R (Rect), C (Circle)
   // - Clear: Delete/Backspace (when not typing), or Ctrl/Cmd+K
   // - Save: Ctrl/Cmd+S
   // - Brush size: [ / ] (decrease/increase)
-  // - Quick colors: 1-8 (palette order) when Brush/Shape tool is active (not eraser)
+  // - Quick colors: 1-8 (palette order) when a color-using tool is active (not eraser)
   useEffect(() => {
     const isTypingTarget = (target) => {
       if (!(target instanceof Element)) return false;
@@ -445,6 +463,11 @@ function App() {
       if (key === "e") {
         e.preventDefault();
         setActiveTool(TOOL.ERASER);
+        return;
+      }
+      if (key === "f") {
+        e.preventDefault();
+        setActiveTool(TOOL.FILL);
         return;
       }
       if (key === "x") {
@@ -613,6 +636,134 @@ function App() {
     }
   };
 
+  const parseHexToRgb = (hex) => {
+    const s = (hex ?? "").trim();
+    const h = s.startsWith("#") ? s.slice(1) : s;
+    if (h.length !== 6) return { r: 0, g: 0, b: 0 };
+    const r = Number.parseInt(h.slice(0, 2), 16);
+    const g = Number.parseInt(h.slice(2, 4), 16);
+    const b = Number.parseInt(h.slice(4, 6), 16);
+    return {
+      r: Number.isFinite(r) ? r : 0,
+      g: Number.isFinite(g) ? g : 0,
+      b: Number.isFinite(b) ? b : 0,
+    };
+  };
+
+  const colorsClose = (c1, c2, tolerance) => {
+    // Use simple max-channel delta; fast and good enough for antialias edges.
+    return (
+      Math.abs(c1.r - c2.r) <= tolerance &&
+      Math.abs(c1.g - c2.g) <= tolerance &&
+      Math.abs(c1.b - c2.b) <= tolerance &&
+      Math.abs(c1.a - c2.a) <= tolerance
+    );
+  };
+
+  const getPixel = (data, idx) => ({
+    r: data[idx],
+    g: data[idx + 1],
+    b: data[idx + 2],
+    a: data[idx + 3],
+  });
+
+  const setPixel = (data, idx, color) => {
+    data[idx] = color.r;
+    data[idx + 1] = color.g;
+    data[idx + 2] = color.b;
+    data[idx + 3] = color.a;
+  };
+
+  const floodFillAtPoint = ({ cssX, cssY }) => {
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx) return;
+
+    // Convert CSS pixel coordinates -> device pixel coordinates (ImageData space)
+    const dpr = window.devicePixelRatio || 1;
+    const x = Math.floor(cssX * dpr);
+    const y = Math.floor(cssY * dpr);
+
+    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+
+    let img;
+    try {
+      img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      return;
+    }
+
+    const { data, width, height } = img;
+    const startIdx = (y * width + x) * 4;
+    const startColor = getPixel(data, startIdx);
+
+    // Paint bucket uses strokeColor as fill color, but respects opacity slider.
+    const rgb = parseHexToRgb(strokeColor);
+    const targetColor = {
+      r: clampByte(rgb.r),
+      g: clampByte(rgb.g),
+      b: clampByte(rgb.b),
+      a: clampByte(Math.round(Math.max(0, Math.min(1, brushOpacity)) * 255)),
+    };
+
+    // If the clicked area is already (effectively) the same color, do nothing.
+    if (colorsClose(startColor, targetColor, Math.max(2, Math.floor(fillTolerance / 2)))) return;
+
+    const tolerance = clampByte(fillTolerance);
+
+    // BFS stack
+    const stack = new Int32Array(width * height * 2);
+    let sp = 0;
+
+    stack[sp++] = x;
+    stack[sp++] = y;
+
+    // Track visited with a compact bitset to avoid O(n) revisit costs.
+    const visited = new Uint8Array(width * height);
+
+    while (sp > 0) {
+      const cy = stack[--sp];
+      const cx = stack[--sp];
+
+      if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
+
+      const pIndex = cy * width + cx;
+      if (visited[pIndex]) continue;
+      visited[pIndex] = 1;
+
+      const idx = pIndex * 4;
+      const current = getPixel(data, idx);
+
+      if (!colorsClose(current, startColor, tolerance)) continue;
+
+      setPixel(data, idx, targetColor);
+
+      // Push 4-neighbors
+      stack[sp++] = cx + 1;
+      stack[sp++] = cy;
+
+      stack[sp++] = cx - 1;
+      stack[sp++] = cy;
+
+      stack[sp++] = cx;
+      stack[sp++] = cy + 1;
+
+      stack[sp++] = cx;
+      stack[sp++] = cy - 1;
+    }
+
+    // Apply the modified image back.
+    skipSnapshotRef.current = true;
+    try {
+      ctx.putImageData(img, 0, 0);
+    } finally {
+      skipSnapshotRef.current = false;
+    }
+
+    // Commit to history so undo/redo works.
+    captureSnapshot();
+  };
+
   const beginStroke = (evt) => {
     const canvas = canvasRef.current;
     const ctx = get2DContext();
@@ -628,6 +779,14 @@ function App() {
     }
 
     const p = getPointFromEvent(evt);
+
+    // --- Fill: click-to-fill (no drag) ---
+    if (activeTool === TOOL.FILL) {
+      // Prevent scrolling on touch and avoid any accidental drag processing.
+      evt.preventDefault?.();
+      floodFillAtPoint({ cssX: p.x, cssY: p.y });
+      return;
+    }
 
     // --- Shapes: start preview session ---
     if (isShapeTool(activeTool)) {
@@ -762,6 +921,8 @@ function App() {
 
   const isEraser = activeTool === TOOL.ERASER;
   const isShape = isShapeTool(activeTool);
+  const isFill = activeTool === TOOL.FILL;
+  const isColorDisabled = isEraser; // fill uses color
 
   return (
     <div className="App" data-app="drawing">
@@ -781,14 +942,14 @@ function App() {
               <div className="toolLabelRow">
                 <span className="toolLabel">Colors</span>
                 <span className="toolHint" aria-hidden="true">
-                  {isEraser ? "Disabled for eraser" : "Click to select"}
+                  {isColorDisabled ? "Disabled for eraser" : "Click to select"}
                 </span>
               </div>
 
               <div className="palette" role="list" aria-label="Color palette">
                 {palette.map((c) => {
                   const active = c.value.toLowerCase() === strokeColor.toLowerCase();
-                  const disabled = isEraser;
+                  const disabled = isColorDisabled;
                   return (
                     <button
                       key={c.value}
@@ -870,15 +1031,45 @@ function App() {
                 </div>
               )}
 
+              {activeTool === TOOL.FILL && (
+                <div className="toolMeta" style={{ marginTop: 10 }}>
+                  <div className="toolLabelRow" style={{ marginBottom: 8 }}>
+                    <span className="toolLabel">Fill tolerance</span>
+                    <span className="toolHint" aria-hidden="true">
+                      {fillTolerance}
+                    </span>
+                  </div>
+
+                  <label className="rangeLabel">
+                    <span className="srOnly">Fill tolerance slider</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={80}
+                      step={1}
+                      value={fillTolerance}
+                      onChange={(e) => setFillTolerance(Number(e.target.value))}
+                      aria-label="Fill tolerance"
+                    />
+                  </label>
+
+                  <span className="toolMetaText">
+                    Higher tolerance fills across slightly different pixels (helpful on antialiased edges).
+                  </span>
+                </div>
+              )}
+
               <div className="toolMeta">
                 <span className="toolMetaText">
                   {isEraser
                     ? "Erases existing pixels."
-                    : isShape
-                      ? activeTool === TOOL.RECT || activeTool === TOOL.CIRCLE
-                        ? `Click-drag to preview, release to commit (${shapeFillMode}).`
-                        : "Click-drag to preview, release to commit."
-                      : "Draws with selected color."}
+                    : isFill
+                      ? "Click an area to flood fill it."
+                      : isShape
+                        ? activeTool === TOOL.RECT || activeTool === TOOL.CIRCLE
+                          ? `Click-drag to preview, release to commit (${shapeFillMode}).`
+                          : "Click-drag to preview, release to commit."
+                        : "Draws with selected color."}
                 </span>
               </div>
             </div>
@@ -886,7 +1077,7 @@ function App() {
             <div className="toolGroup">
               <div className="toolLabelRow">
                 <span className="toolLabel">
-                  {isEraser ? "Eraser size" : isShape ? "Stroke size" : "Brush size"}
+                  {isEraser ? "Eraser size" : isShape ? "Stroke size" : isFill ? "Size" : "Brush size"}
                 </span>
                 <span className="toolHint" aria-hidden="true">
                   {brushSize}px
@@ -960,9 +1151,11 @@ function App() {
                   <span className="toolMetaText">
                     {isEraser
                       ? "Opacity is disabled for eraser."
-                      : isShape
-                        ? "Applies to shape stroke/fill."
-                        : "Applies to brush strokes."}
+                      : isFill
+                        ? "Sets the alpha of the fill color."
+                        : isShape
+                          ? "Applies to shape stroke/fill."
+                          : "Applies to brush strokes."}
                   </span>
                 </div>
               </div>
@@ -1057,8 +1250,8 @@ function App() {
               <div className="toolMeta">
                 <span className="toolMetaText">
                   Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z), Save (Ctrl/Cmd+S), Clear
-                  (Del/Backspace), Brush (B), Eraser (E), Line (L), Rect (R), Circle (C), Toggle
-                  Brush/Eraser (X), Size ([ / ]), Colors (1–8)
+                  (Del/Backspace), Brush (B), Eraser (E), Fill (F), Line (L), Rect (R), Circle (C),
+                  Toggle Brush/Eraser (X), Size ([ / ]), Colors (1–8)
                 </span>
               </div>
             </div>
@@ -1067,7 +1260,7 @@ function App() {
           <div className="canvasWrap" ref={containerRef}>
             <canvas
               ref={canvasRef}
-              className={`canvas ${isEraser ? "eraserCursor" : ""}`}
+              className={`canvas ${isEraser ? "eraserCursor" : ""} ${isFill ? "fillCursor" : ""}`}
               style={{ backgroundColor }}
               onPointerDown={beginStroke}
               onPointerMove={continueStroke}
@@ -1079,7 +1272,12 @@ function App() {
               tabIndex={0}
             />
             <div className="canvasHelp" aria-hidden="true">
-              Tip: {isShape ? "Drag to preview the shape, then release to commit." : "Try the shape tools for clean geometry."}
+              Tip:{" "}
+              {isFill
+                ? "Click inside a region to fill it."
+                : isShape
+                  ? "Drag to preview the shape, then release to commit."
+                  : "Try the shape tools for clean geometry."}
             </div>
           </div>
         </section>
