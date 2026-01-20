@@ -166,6 +166,34 @@
   line-height: 1.4;
 }
 
+.bgControl {
+  display: grid;
+  gap: 10px;
+}
+
+.bgPicker input[type="color"] {
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+}
+
+.bgPicker input[type="color"]:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.bgPresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .brushPresets {
   display: flex;
   flex-wrap: wrap;
@@ -278,7 +306,6 @@
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-soft);
-  background: #ffffff;
   touch-action: none; /* critical for touch drawing with pointer events */
   cursor: crosshair;
 }

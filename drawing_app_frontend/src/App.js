@@ -47,6 +47,9 @@ function App() {
   const [strokeColor, setStrokeColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(8);
 
+  // Canvas background color (fill). This is baked into exports so saved PNGs match what users see.
+  const [backgroundColor, setBackgroundColor] = useState("#ffffff");
+
   const palette = useMemo(
     () => [
       { name: "Ink", value: "#111827" },
@@ -116,7 +119,7 @@ function App() {
     return { cssWidth: rect.width, cssHeight: rect.height };
   };
 
-  const fillWhiteBackground = () => {
+  const fillCanvasBackground = (color) => {
     const canvas = canvasRef.current;
     const ctx = get2DContext();
     if (!canvas || !ctx) return;
@@ -128,10 +131,11 @@ function App() {
     // Fill in device pixels; then restore dpr scaling.
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = color;
     ctx.fillRect(0, 0, cssWidth * dpr, cssHeight * dpr);
     ctx.restore();
 
+    // Restore the expected dpr-scaled coordinate system for drawing.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
   };
@@ -254,9 +258,9 @@ function App() {
       // Since ctx is dpr-scaled, use CSS-pixel dimensions for drawImage target.
       ctx.drawImage(old, 0, 0, old.width, old.height, 0, 0, cssWidth, cssHeight);
     } else {
-      // Initialize with white background for consistent saved image.
+      // Initialize with current background color for consistent exports.
       ctx.save();
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = backgroundColor;
       ctx.fillRect(0, 0, cssWidth, cssHeight);
       ctx.restore();
     }
@@ -275,6 +279,25 @@ function App() {
     return () => window.removeEventListener("resize", onResize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx) return;
+
+    // Paint the chosen background behind the current bitmap.
+    // This preserves any existing drawing and also colors "erased" (transparent) areas.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "destination-over";
+    ctx.fillStyle = backgroundColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    // Snapshot so undo/redo includes background changes.
+    captureSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundColor]);
 
   // Keyboard shortcuts: Ctrl/Cmd+Z for undo, Ctrl/Cmd+Shift+Z for redo (also Ctrl/Cmd+Y).
   useEffect(() => {
@@ -397,8 +420,8 @@ function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
 
-    // Re-apply white background so saved PNG isn't transparent (often expected for drawings).
-    fillWhiteBackground();
+    // Re-apply background so saved PNG isn't transparent and matches user selection.
+    fillCanvasBackground(backgroundColor);
 
     captureSnapshot();
   };
@@ -408,7 +431,23 @@ function App() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dataUrl = canvas.toDataURL("image/png");
+    // Export using an offscreen canvas so the background is guaranteed to be included
+    // even if the user used the eraser (which creates transparency).
+    const out = document.createElement("canvas");
+    out.width = canvas.width;
+    out.height = canvas.height;
+
+    const outCtx = out.getContext("2d");
+    if (!outCtx) return;
+
+    outCtx.save();
+    outCtx.globalCompositeOperation = "source-over";
+    outCtx.fillStyle = backgroundColor;
+    outCtx.fillRect(0, 0, out.width, out.height);
+    outCtx.drawImage(canvas, 0, 0);
+    outCtx.restore();
+
+    const dataUrl = out.toDataURL("image/png");
 
     const a = document.createElement("a");
     a.href = dataUrl;
@@ -553,6 +592,54 @@ function App() {
               </div>
             </div>
 
+            <div className="toolGroup">
+              <div className="toolLabelRow">
+                <span className="toolLabel">Background</span>
+                <span className="toolHint" aria-hidden="true">
+                  Fill
+                </span>
+              </div>
+
+              <div className="bgControl" role="group" aria-label="Background color">
+                <label className="bgPicker">
+                  <span className="srOnly">Background color</span>
+                  <input
+                    type="color"
+                    value={backgroundColor}
+                    onChange={(e) => setBackgroundColor(e.target.value)}
+                    aria-label="Background color"
+                  />
+                </label>
+
+                <div className="bgPresets" role="group" aria-label="Background presets">
+                  {[
+                    { label: "White", value: "#ffffff" },
+                    { label: "Paper", value: "#f8fafc" },
+                    { label: "Warm", value: "#fff7ed" },
+                    { label: "Cool", value: "#ecfeff" },
+                  ].map((p) => {
+                    const active = p.value.toLowerCase() === backgroundColor.toLowerCase();
+                    return (
+                      <button
+                        key={p.value}
+                        type="button"
+                        className={`chip ${active ? "active" : ""}`}
+                        onClick={() => setBackgroundColor(p.value)}
+                        aria-pressed={active}
+                        title={p.label}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="toolMeta">
+                  <span className="toolMetaText">Included in “Save PNG”.</span>
+                </div>
+              </div>
+            </div>
+
             <div className="toolGroup actions">
               <span className="toolLabel">Actions</span>
               <div className="actionButtons">
@@ -593,6 +680,7 @@ function App() {
             <canvas
               ref={canvasRef}
               className={`canvas ${isEraser ? "eraserCursor" : ""}`}
+              style={{ backgroundColor }}
               onPointerDown={beginStroke}
               onPointerMove={continueStroke}
               onPointerUp={endStroke}
