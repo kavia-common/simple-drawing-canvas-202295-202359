@@ -6,7 +6,16 @@ import "./App.css";
  * - Uses Pointer Events so it works with mouse, touch, and pen.
  * - Uses an offscreen backing store approach by storing drawing directly in the canvas bitmap.
  * - Canvas is scaled for devicePixelRatio for crisp lines.
+ *
+ * Eraser implementation:
+ * - Uses canvas compositing: destination-out removes pixels from existing content.
+ * - Works best with a non-transparent background. We keep a white background on init/clear.
  */
+
+const TOOL = Object.freeze({
+  BRUSH: "brush",
+  ERASER: "eraser",
+});
 
 // PUBLIC_INTERFACE
 function App() {
@@ -19,6 +28,7 @@ function App() {
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef({ x: 0, y: 0 });
 
+  const [activeTool, setActiveTool] = useState(TOOL.BRUSH);
   const [strokeColor, setStrokeColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(8);
 
@@ -43,6 +53,22 @@ function App() {
       { label: "M", value: 10 },
       { label: "L", value: 16 },
       { label: "XL", value: 24 },
+    ],
+    []
+  );
+
+  const toolPresets = useMemo(
+    () => [
+      {
+        id: TOOL.BRUSH,
+        label: "Brush",
+        hint: "Draw",
+      },
+      {
+        id: TOOL.ERASER,
+        label: "Eraser",
+        hint: "Erase",
+      },
     ],
     []
   );
@@ -104,17 +130,7 @@ function App() {
     if (old.width > 0 && old.height > 0) {
       // old was in device pixels; draw it into the new device pixel canvas by temporarily undoing css scaling.
       // Since ctx is dpr-scaled, use CSS-pixel dimensions for drawImage target.
-      ctx.drawImage(
-        old,
-        0,
-        0,
-        old.width,
-        old.height,
-        0,
-        0,
-        cssWidth,
-        cssHeight
-      );
+      ctx.drawImage(old, 0, 0, old.width, old.height, 0, 0, cssWidth, cssHeight);
     } else {
       // Initialize with white background for consistent saved image.
       ctx.save();
@@ -145,6 +161,24 @@ function App() {
     return { x, y };
   };
 
+  const applyToolToContext = (ctx) => {
+    // Configure the drawing/erasing behavior for this stroke.
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (activeTool === TOOL.ERASER) {
+      // destination-out punches holes in existing pixels (eraser).
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "rgba(0,0,0,1)";
+      ctx.fillStyle = "rgba(0,0,0,1)";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = strokeColor;
+      ctx.fillStyle = strokeColor;
+    }
+  };
+
   const beginStroke = (evt) => {
     const canvas = canvasRef.current;
     const ctx = get2DContext();
@@ -166,7 +200,7 @@ function App() {
 
     // Dot on tap/click
     ctx.save();
-    ctx.fillStyle = strokeColor;
+    applyToolToContext(ctx);
     ctx.beginPath();
     ctx.arc(p.x, p.y, brushSize / 2, 0, Math.PI * 2);
     ctx.fill();
@@ -183,8 +217,7 @@ function App() {
     const last = lastPointRef.current;
 
     ctx.save();
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = brushSize;
+    applyToolToContext(ctx);
     ctx.beginPath();
     ctx.moveTo(last.x, last.y);
     ctx.lineTo(p.x, p.y);
@@ -240,13 +273,15 @@ function App() {
     a.remove();
   };
 
+  const isEraser = activeTool === TOOL.ERASER;
+
   return (
     <div className="App" data-app="drawing">
       <header className="appHeader">
         <div className="headerText">
           <h1 className="appTitle">Simple Drawing Canvas</h1>
           <p className="appSubtitle">
-            Pick a color and brush size, draw on the canvas, then save your image.
+            Pick a tool, color and brush size, draw on the canvas, then save your image.
           </p>
         </div>
       </header>
@@ -258,23 +293,31 @@ function App() {
               <div className="toolLabelRow">
                 <span className="toolLabel">Colors</span>
                 <span className="toolHint" aria-hidden="true">
-                  Click to select
+                  {isEraser ? "Disabled for eraser" : "Click to select"}
                 </span>
               </div>
 
               <div className="palette" role="list" aria-label="Color palette">
                 {palette.map((c) => {
                   const active = c.value.toLowerCase() === strokeColor.toLowerCase();
+                  const disabled = isEraser;
                   return (
                     <button
                       key={c.value}
                       type="button"
                       className={`swatch ${active ? "active" : ""}`}
-                      style={{ backgroundColor: c.value }}
-                      onClick={() => setStrokeColor(c.value)}
+                      style={{
+                        backgroundColor: c.value,
+                        opacity: disabled ? 0.45 : 1,
+                        cursor: disabled ? "not-allowed" : "pointer",
+                      }}
+                      onClick={() => {
+                        if (!disabled) setStrokeColor(c.value);
+                      }}
                       aria-label={`Select color ${c.name}`}
                       aria-pressed={active}
-                      title={c.name}
+                      title={disabled ? "Color not used while erasing" : c.name}
+                      disabled={disabled}
                     />
                   );
                 })}
@@ -283,7 +326,40 @@ function App() {
 
             <div className="toolGroup">
               <div className="toolLabelRow">
-                <span className="toolLabel">Brush</span>
+                <span className="toolLabel">Tool</span>
+                <span className="toolHint" aria-hidden="true">
+                  {isEraser ? "Eraser" : "Brush"}
+                </span>
+              </div>
+
+              <div className="toolToggle" role="group" aria-label="Tool selection">
+                {toolPresets.map((t) => {
+                  const active = t.id === activeTool;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`chip ${active ? "active" : ""}`}
+                      onClick={() => setActiveTool(t.id)}
+                      aria-pressed={active}
+                      title={t.hint}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="toolMeta">
+                <span className="toolMetaText">
+                  {isEraser ? "Erases existing strokes." : "Draws with selected color."}
+                </span>
+              </div>
+            </div>
+
+            <div className="toolGroup">
+              <div className="toolLabelRow">
+                <span className="toolLabel">{isEraser ? "Eraser size" : "Brush size"}</span>
                 <span className="toolHint" aria-hidden="true">
                   {brushSize}px
                 </span>
@@ -315,17 +391,17 @@ function App() {
                     max={40}
                     value={brushSize}
                     onChange={(e) => setBrushSize(Number(e.target.value))}
-                    aria-label="Brush size"
+                    aria-label={isEraser ? "Eraser size" : "Brush size"}
                   />
                 </label>
 
                 <div className="brushPreview" aria-label="Current brush preview">
                   <span
-                    className="brushDot"
+                    className={`brushDot ${isEraser ? "eraser" : ""}`}
                     style={{
                       width: `${Math.max(6, brushSize)}px`,
                       height: `${Math.max(6, brushSize)}px`,
-                      backgroundColor: strokeColor,
+                      backgroundColor: isEraser ? "#ffffff" : strokeColor,
                     }}
                   />
                 </div>
@@ -348,7 +424,7 @@ function App() {
           <div className="canvasWrap" ref={containerRef}>
             <canvas
               ref={canvasRef}
-              className="canvas"
+              className={`canvas ${isEraser ? "eraserCursor" : ""}`}
               onPointerDown={beginStroke}
               onPointerMove={continueStroke}
               onPointerUp={endStroke}
@@ -358,7 +434,7 @@ function App() {
               role="img"
             />
             <div className="canvasHelp" aria-hidden="true">
-              Tip: Use mouse, touch, or pen to draw.
+              Tip: Select {isEraser ? "Brush to draw again" : "Eraser to remove strokes"}.
             </div>
           </div>
         </section>
