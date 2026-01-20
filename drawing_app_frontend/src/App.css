@@ -248,6 +248,13 @@
   box-shadow: var(--shadow-soft);
 }
 
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .btn.primary {
   background: linear-gradient(135deg, rgba(59, 130, 246, 1), rgba(6, 182, 212, 0.95));
   color: white;

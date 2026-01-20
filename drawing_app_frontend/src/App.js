@@ -10,11 +10,20 @@ import "./App.css";
  * Eraser implementation:
  * - Uses canvas compositing: destination-out removes pixels from existing content.
  * - Works best with a non-transparent background. We keep a white background on init/clear.
+ *
+ * Undo/redo implementation notes:
+ * - We store snapshots as ImageData so they are resolution-independent relative to the actual canvas buffer.
+ * - We snapshot at the end of each stroke and after clear.
+ * - We cap history size to keep memory usage predictable.
  */
 
 const TOOL = Object.freeze({
   BRUSH: "brush",
   ERASER: "eraser",
+});
+
+const HISTORY = Object.freeze({
+  MAX: 60,
 });
 
 // PUBLIC_INTERFACE
@@ -27,6 +36,12 @@ function App() {
 
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef({ x: 0, y: 0 });
+
+  // History (undo/redo)
+  const historyRef = useRef(/** @type {ImageData[]} */ ([]));
+  const historyIndexRef = useRef(0);
+  const skipSnapshotRef = useRef(false); // prevents history growth when applying history
+  const [historyMeta, setHistoryMeta] = useState({ canUndo: false, canRedo: false });
 
   const [activeTool, setActiveTool] = useState(TOOL.BRUSH);
   const [strokeColor, setStrokeColor] = useState("#111827");
@@ -78,11 +93,119 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
+  const syncHistoryMeta = () => {
+    const len = historyRef.current.length;
+    const idx = historyIndexRef.current;
+    setHistoryMeta({
+      canUndo: len > 0 && idx > 1, // index 1 is the first real snapshot (see init)
+      canRedo: len > 0 && idx < len,
+    });
+  };
+
   const get2DContext = () => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     return ctx;
+  };
+
+  const getCanvasCssSize = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { cssWidth: 0, cssHeight: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return { cssWidth: rect.width, cssHeight: rect.height };
+  };
+
+  const fillWhiteBackground = () => {
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const { cssWidth, cssHeight } = getCanvasCssSize();
+    if (!cssWidth || !cssHeight) return;
+
+    // Fill in device pixels; then restore dpr scaling.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, cssWidth * dpr, cssHeight * dpr);
+    ctx.restore();
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+  };
+
+  const captureSnapshot = () => {
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx) return;
+
+    if (skipSnapshotRef.current) return;
+
+    // If user drew after undoing, drop the redo branch.
+    if (historyIndexRef.current < historyRef.current.length) {
+      historyRef.current = historyRef.current.slice(0, historyIndexRef.current);
+    }
+
+    try {
+      const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      historyRef.current.push(snap);
+
+      // Cap history size: keep the newest MAX snapshots.
+      if (historyRef.current.length > HISTORY.MAX) {
+        const overflow = historyRef.current.length - HISTORY.MAX;
+        historyRef.current.splice(0, overflow);
+
+        // Adjust index to reflect removal from front.
+        historyIndexRef.current = Math.max(0, historyIndexRef.current - overflow);
+      }
+
+      historyIndexRef.current = historyRef.current.length;
+      syncHistoryMeta();
+    } catch {
+      // If getImageData fails for any reason, avoid breaking drawing.
+    }
+  };
+
+  const applySnapshot = (snap) => {
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx || !snap) return;
+
+    skipSnapshotRef.current = true;
+    try {
+      ctx.putImageData(snap, 0, 0);
+    } finally {
+      skipSnapshotRef.current = false;
+    }
+  };
+
+  // PUBLIC_INTERFACE
+  const undo = () => {
+    const idx = historyIndexRef.current;
+    if (idx <= 1) return;
+
+    const nextIdx = idx - 1;
+    historyIndexRef.current = nextIdx;
+
+    const snap = historyRef.current[nextIdx - 1];
+    applySnapshot(snap);
+    syncHistoryMeta();
+  };
+
+  // PUBLIC_INTERFACE
+  const redo = () => {
+    const idx = historyIndexRef.current;
+    const len = historyRef.current.length;
+    if (idx >= len) return;
+
+    const nextIdx = idx + 1;
+    historyIndexRef.current = nextIdx;
+
+    const snap = historyRef.current[nextIdx - 1];
+    applySnapshot(snap);
+    syncHistoryMeta();
   };
 
   const setCanvasSizeToContainer = () => {
@@ -128,7 +251,6 @@ function App() {
 
     // Restore old drawing content scaled into the new canvas size.
     if (old.width > 0 && old.height > 0) {
-      // old was in device pixels; draw it into the new device pixel canvas by temporarily undoing css scaling.
       // Since ctx is dpr-scaled, use CSS-pixel dimensions for drawImage target.
       ctx.drawImage(old, 0, 0, old.width, old.height, 0, 0, cssWidth, cssHeight);
     } else {
@@ -138,6 +260,11 @@ function App() {
       ctx.fillRect(0, 0, cssWidth, cssHeight);
       ctx.restore();
     }
+
+    // Resizing invalidates ImageData sizes; re-initialize history based on current canvas state.
+    historyRef.current = [];
+    historyIndexRef.current = 0;
+    captureSnapshot(); // baseline
   };
 
   useEffect(() => {
@@ -146,6 +273,30 @@ function App() {
     const onResize = () => setCanvasSizeToContainer();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keyboard shortcuts: Ctrl/Cmd+Z for undo, Ctrl/Cmd+Shift+Z for redo (also Ctrl/Cmd+Y).
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const isMac = navigator.platform.toLowerCase().includes("mac");
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+
+      if (!mod) return;
+
+      const key = e.key.toLowerCase();
+      const isUndo = key === "z" && !e.shiftKey;
+      const isRedo = (key === "z" && e.shiftKey) || key === "y";
+
+      if (!isUndo && !isRedo) return;
+
+      e.preventDefault();
+      if (isUndo) undo();
+      if (isRedo) redo();
+    };
+
+    window.addEventListener("keydown", onKeyDown, { passive: false });
+    return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -228,7 +379,11 @@ function App() {
   };
 
   const endStroke = () => {
+    if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
+
+    // Snapshot after completing a stroke so undo removes the last action.
+    captureSnapshot();
   };
 
   // PUBLIC_INTERFACE
@@ -237,25 +392,15 @@ function App() {
     const ctx = get2DContext();
     if (!canvas || !ctx) return;
 
-    // Since ctx is dpr-scaled, use CSS pixel size from styles.
-    const rect = canvas.getBoundingClientRect();
-
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0); // clear full device pixel buffer
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
 
     // Re-apply white background so saved PNG isn't transparent (often expected for drawings).
-    const dpr = window.devicePixelRatio || 1;
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, rect.width * dpr, rect.height * dpr);
-    ctx.restore();
+    fillWhiteBackground();
 
-    // Restore scaling transform.
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+    captureSnapshot();
   };
 
   // PUBLIC_INTERFACE
@@ -411,12 +556,35 @@ function App() {
             <div className="toolGroup actions">
               <span className="toolLabel">Actions</span>
               <div className="actionButtons">
+                <button
+                  type="button"
+                  className="btn secondary"
+                  onClick={undo}
+                  disabled={!historyMeta.canUndo}
+                  title="Undo (Ctrl/Cmd+Z)"
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  onClick={redo}
+                  disabled={!historyMeta.canRedo}
+                  title="Redo (Ctrl/Cmd+Shift+Z)"
+                >
+                  Redo
+                </button>
                 <button type="button" className="btn secondary" onClick={clearCanvas}>
                   Clear
                 </button>
                 <button type="button" className="btn primary" onClick={saveAsImage}>
                   Save PNG
                 </button>
+              </div>
+              <div className="toolMeta">
+                <span className="toolMetaText">
+                  Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z)
+                </span>
               </div>
             </div>
           </div>
@@ -432,6 +600,7 @@ function App() {
               onPointerLeave={endStroke}
               aria-label="Drawing canvas"
               role="img"
+              tabIndex={0}
             />
             <div className="canvasHelp" aria-hidden="true">
               Tip: Select {isEraser ? "Brush to draw again" : "Eraser to remove strokes"}.
