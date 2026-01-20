@@ -15,11 +15,21 @@ import "./App.css";
  * - We store snapshots as ImageData so they are resolution-independent relative to the actual canvas buffer.
  * - We snapshot at the end of each stroke and after clear.
  * - We cap history size to keep memory usage predictable.
+ *
+ * Shapes implementation notes (line/rectangle/circle):
+ * - Shapes use a "preview while dragging" approach:
+ *   1) On pointer down, capture a base ImageData snapshot.
+ *   2) On pointer move, restore base snapshot then draw the current shape on top.
+ *   3) On pointer up/cancel, draw final shape once and commit a history snapshot.
+ * - This ensures shapes integrate cleanly with undo/redo and do not permanently paint intermediate previews.
  */
 
 const TOOL = Object.freeze({
   BRUSH: "brush",
   ERASER: "eraser",
+  LINE: "line",
+  RECT: "rect",
+  CIRCLE: "circle",
 });
 
 const HISTORY = Object.freeze({
@@ -36,6 +46,10 @@ function App() {
 
   const isDrawingRef = useRef(false);
   const lastPointRef = useRef({ x: 0, y: 0 });
+
+  // Shapes: track the drag start point and store a base snapshot for preview.
+  const shapeStartRef = useRef(null);
+  const shapeBaseSnapRef = useRef(null);
 
   // History (undo/redo)
   const historyRef = useRef(/** @type {ImageData[]} */ ([]));
@@ -77,16 +91,11 @@ function App() {
 
   const toolPresets = useMemo(
     () => [
-      {
-        id: TOOL.BRUSH,
-        label: "Brush",
-        hint: "Draw",
-      },
-      {
-        id: TOOL.ERASER,
-        label: "Eraser",
-        hint: "Erase",
-      },
+      { id: TOOL.BRUSH, label: "Brush", hint: "Freehand draw" },
+      { id: TOOL.ERASER, label: "Eraser", hint: "Erase pixels" },
+      { id: TOOL.LINE, label: "Line", hint: "Draw a straight line" },
+      { id: TOOL.RECT, label: "Rect", hint: "Draw a rectangle outline" },
+      { id: TOOL.CIRCLE, label: "Circle", hint: "Draw a circle outline" },
     ],
     []
   );
@@ -305,13 +314,64 @@ function App() {
     setActiveTool((t) => (t === TOOL.BRUSH ? TOOL.ERASER : TOOL.BRUSH));
   };
 
+  const isShapeTool = (tool) => tool === TOOL.LINE || tool === TOOL.RECT || tool === TOOL.CIRCLE;
+
+  const getToolLabel = (tool) => {
+    switch (tool) {
+      case TOOL.BRUSH:
+        return "Brush";
+      case TOOL.ERASER:
+        return "Eraser";
+      case TOOL.LINE:
+        return "Line";
+      case TOOL.RECT:
+        return "Rectangle";
+      case TOOL.CIRCLE:
+        return "Circle";
+      default:
+        return "Tool";
+    }
+  };
+
+  // PUBLIC_INTERFACE
+  const saveAsImage = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Export using an offscreen canvas so the background is guaranteed to be included
+    // even if the user used the eraser (which creates transparency).
+    const out = document.createElement("canvas");
+    out.width = canvas.width;
+    out.height = canvas.height;
+
+    const outCtx = out.getContext("2d");
+    if (!outCtx) return;
+
+    outCtx.save();
+    outCtx.globalCompositeOperation = "source-over";
+    outCtx.fillStyle = backgroundColor;
+    outCtx.fillRect(0, 0, out.width, out.height);
+    outCtx.drawImage(canvas, 0, 0);
+    outCtx.restore();
+
+    const dataUrl = out.toDataURL("image/png");
+
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `drawing-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   // Keyboard shortcuts:
-  // - Undo/Redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y (existing behavior)
-  // - Tool toggle: B (Brush), E (Eraser), X (Toggle)
+  // - Undo/Redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y
+  // - Tool selection: B (Brush), E (Eraser), X (Toggle between Brush/Eraser)
+  // - Shapes: L (Line), R (Rect), C (Circle)
   // - Clear: Delete/Backspace (when not typing), or Ctrl/Cmd+K
   // - Save: Ctrl/Cmd+S
   // - Brush size: [ / ] (decrease/increase)
-  // - Quick colors: 1-8 (palette order) when Brush tool is active
+  // - Quick colors: 1-8 (palette order) when Brush/Shape tool is active (not eraser)
   useEffect(() => {
     const isTypingTarget = (target) => {
       if (!(target instanceof Element)) return false;
@@ -385,6 +445,23 @@ function App() {
         return;
       }
 
+      // Shapes shortcuts
+      if (key === "l") {
+        e.preventDefault();
+        setActiveTool(TOOL.LINE);
+        return;
+      }
+      if (key === "r") {
+        e.preventDefault();
+        setActiveTool(TOOL.RECT);
+        return;
+      }
+      if (key === "c") {
+        e.preventDefault();
+        setActiveTool(TOOL.CIRCLE);
+        return;
+      }
+
       // --- Brush size adjustments ---
       // Keep these unmodified so they are quick to use while drawing.
       if (key === "[") {
@@ -399,9 +476,9 @@ function App() {
       }
 
       // --- Quick palette colors ---
-      // 1..8 selects palette color (only when Brush is active)
+      // 1..8 selects palette color (only when not erasing)
       if (!mod && !e.shiftKey && key.length === 1 && key >= "1" && key <= "8") {
-        if (activeTool !== TOOL.BRUSH) return;
+        if (activeTool === TOOL.ERASER) return;
         const idx = Number(key) - 1;
         const color = palette[idx]?.value;
         if (!color) return;
@@ -445,6 +522,66 @@ function App() {
     }
   };
 
+  const drawShapePreviewOrCommit = ({ start, end, isPreview }) => {
+    const ctx = get2DContext();
+    if (!ctx) return;
+
+    ctx.save();
+    // Shapes should always "draw" (never erase). If user wants to remove, they can use eraser tool.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.strokeStyle = strokeColor;
+    ctx.fillStyle = strokeColor;
+    ctx.lineWidth = brushSize;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // Make preview slightly translucent for clarity while dragging.
+    if (isPreview) {
+      ctx.globalAlpha = 0.75;
+    }
+
+    const x1 = start.x;
+    const y1 = start.y;
+    const x2 = end.x;
+    const y2 = end.y;
+
+    if (activeTool === TOOL.LINE) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    if (activeTool === TOOL.RECT) {
+      const left = Math.min(x1, x2);
+      const top = Math.min(y1, y2);
+      const w = Math.abs(x2 - x1);
+      const h = Math.abs(y2 - y1);
+
+      // Avoid tiny accidental rectangles; still allow small ones by leaving threshold low.
+      ctx.beginPath();
+      ctx.rect(left, top, w, h);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    if (activeTool === TOOL.CIRCLE) {
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
+      const rx = Math.abs(x2 - x1) / 2;
+      const ry = Math.abs(y2 - y1) / 2;
+
+      // Draw an ellipse (circle tool uses ellipse so it behaves intuitively even if drag isn't square).
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+
   const beginStroke = (evt) => {
     const canvas = canvasRef.current;
     const ctx = get2DContext();
@@ -459,9 +596,40 @@ function App() {
       }
     }
 
-    isDrawingRef.current = true;
-
     const p = getPointFromEvent(evt);
+
+    // --- Shapes: start preview session ---
+    if (isShapeTool(activeTool)) {
+      isDrawingRef.current = true;
+      shapeStartRef.current = p;
+
+      // Capture base snapshot for preview restore.
+      try {
+        shapeBaseSnapRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      } catch {
+        shapeBaseSnapRef.current = null;
+      }
+
+      // For line tool, give immediate feedback with a tiny dot.
+      // This mirrors the brush behavior (tap creates a dot) and makes shapes feel responsive.
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = strokeColor;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(1, brushSize / 3), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Restore base snapshot because the dot is only for feedback; actual shape will commit on release.
+      if (shapeBaseSnapRef.current) {
+        applySnapshot(shapeBaseSnapRef.current);
+      }
+
+      return;
+    }
+
+    // --- Brush/Eraser: existing freehand behavior ---
+    isDrawingRef.current = true;
     lastPointRef.current = p;
 
     // Dot on tap/click
@@ -476,10 +644,27 @@ function App() {
   const continueStroke = (evt) => {
     if (!isDrawingRef.current) return;
 
+    const canvas = canvasRef.current;
     const ctx = get2DContext();
-    if (!ctx) return;
+    if (!canvas || !ctx) return;
 
     const p = getPointFromEvent(evt);
+
+    // --- Shapes: preview while dragging ---
+    if (isShapeTool(activeTool)) {
+      const start = shapeStartRef.current;
+      if (!start) return;
+
+      // Restore base snapshot then draw preview shape on top.
+      if (shapeBaseSnapRef.current) {
+        applySnapshot(shapeBaseSnapRef.current);
+      }
+
+      drawShapePreviewOrCommit({ start, end: p, isPreview: true });
+      return;
+    }
+
+    // --- Brush/Eraser: freehand stroke ---
     const last = lastPointRef.current;
 
     ctx.save();
@@ -493,11 +678,36 @@ function App() {
     lastPointRef.current = p;
   };
 
-  const endStroke = () => {
+  const endStroke = (evt) => {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
 
-    // Snapshot after completing a stroke so undo removes the last action.
+    const canvas = canvasRef.current;
+    const ctx = get2DContext();
+    if (!canvas || !ctx) return;
+
+    // --- Shapes: commit on release ---
+    if (isShapeTool(activeTool)) {
+      const start = shapeStartRef.current;
+      shapeStartRef.current = null;
+
+      const end = evt ? getPointFromEvent(evt) : lastPointRef.current;
+      // Restore base (removes preview), then draw final shape.
+      if (shapeBaseSnapRef.current) {
+        applySnapshot(shapeBaseSnapRef.current);
+      }
+      shapeBaseSnapRef.current = null;
+
+      if (start) {
+        drawShapePreviewOrCommit({ start, end, isPreview: false });
+      }
+
+      // Snapshot after completing a shape so undo removes the last action.
+      captureSnapshot();
+      return;
+    }
+
+    // --- Brush/Eraser: snapshot after completing a stroke ---
     captureSnapshot();
   };
 
@@ -518,38 +728,8 @@ function App() {
     captureSnapshot();
   };
 
-  // PUBLIC_INTERFACE
-  const saveAsImage = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    // Export using an offscreen canvas so the background is guaranteed to be included
-    // even if the user used the eraser (which creates transparency).
-    const out = document.createElement("canvas");
-    out.width = canvas.width;
-    out.height = canvas.height;
-
-    const outCtx = out.getContext("2d");
-    if (!outCtx) return;
-
-    outCtx.save();
-    outCtx.globalCompositeOperation = "source-over";
-    outCtx.fillStyle = backgroundColor;
-    outCtx.fillRect(0, 0, out.width, out.height);
-    outCtx.drawImage(canvas, 0, 0);
-    outCtx.restore();
-
-    const dataUrl = out.toDataURL("image/png");
-
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `drawing-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.png`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
-
   const isEraser = activeTool === TOOL.ERASER;
+  const isShape = isShapeTool(activeTool);
 
   return (
     <div className="App" data-app="drawing">
@@ -557,7 +737,7 @@ function App() {
         <div className="headerText">
           <h1 className="appTitle">Simple Drawing Canvas</h1>
           <p className="appSubtitle">
-            Pick a tool, color and brush size, draw on the canvas, then save your image.
+            Pick a tool, color and size, draw on the canvas, then save your image.
           </p>
         </div>
       </header>
@@ -604,18 +784,18 @@ function App() {
               <div className="toolLabelRow">
                 <span className="toolLabel">Tool</span>
                 <span className="toolHint" aria-hidden="true">
-                  {isEraser ? "Eraser" : "Brush"}
+                  {getToolLabel(activeTool)}
                 </span>
               </div>
 
-              <div className="toolToggle" role="group" aria-label="Tool selection">
+              <div className="segmented" role="group" aria-label="Tool selection">
                 {toolPresets.map((t) => {
                   const active = t.id === activeTool;
                   return (
                     <button
                       key={t.id}
                       type="button"
-                      className={`chip ${active ? "active" : ""}`}
+                      className={`segBtn ${active ? "active" : ""}`}
                       onClick={() => setActiveTool(t.id)}
                       aria-pressed={active}
                       title={t.hint}
@@ -628,21 +808,27 @@ function App() {
 
               <div className="toolMeta">
                 <span className="toolMetaText">
-                  {isEraser ? "Erases existing strokes." : "Draws with selected color."}
+                  {isEraser
+                    ? "Erases existing pixels."
+                    : isShape
+                      ? "Click-drag to preview, release to commit."
+                      : "Draws with selected color."}
                 </span>
               </div>
             </div>
 
             <div className="toolGroup">
               <div className="toolLabelRow">
-                <span className="toolLabel">{isEraser ? "Eraser size" : "Brush size"}</span>
+                <span className="toolLabel">
+                  {isEraser ? "Eraser size" : isShape ? "Stroke size" : "Brush size"}
+                </span>
                 <span className="toolHint" aria-hidden="true">
                   {brushSize}px
                 </span>
               </div>
 
               <div className="brushRow">
-                <div className="brushPresets" role="group" aria-label="Brush size presets">
+                <div className="brushPresets" role="group" aria-label="Size presets">
                   {brushPresets.map((p) => {
                     const active = p.value === brushSize;
                     return (
@@ -660,18 +846,18 @@ function App() {
                 </div>
 
                 <label className="rangeLabel">
-                  <span className="srOnly">Brush size slider</span>
+                  <span className="srOnly">Size slider</span>
                   <input
                     type="range"
                     min={1}
                     max={40}
                     value={brushSize}
                     onChange={(e) => setBrushSize(Number(e.target.value))}
-                    aria-label={isEraser ? "Eraser size" : "Brush size"}
+                    aria-label={isEraser ? "Eraser size" : isShape ? "Stroke size" : "Brush size"}
                   />
                 </label>
 
-                <div className="brushPreview" aria-label="Current brush preview">
+                <div className="brushPreview" aria-label="Current size preview">
                   <span
                     className={`brushDot ${isEraser ? "eraser" : ""}`}
                     style={{
@@ -772,9 +958,9 @@ function App() {
               </div>
               <div className="toolMeta">
                 <span className="toolMetaText">
-                  Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z), Save (Ctrl/Cmd+S),
-                  Clear (Del/Backspace), Brush (B), Eraser (E), Toggle tool (X), Size ([ / ]),
-                  Colors (1–8)
+                  Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z), Save (Ctrl/Cmd+S), Clear
+                  (Del/Backspace), Brush (B), Eraser (E), Line (L), Rect (R), Circle (C), Toggle
+                  Brush/Eraser (X), Size ([ / ]), Colors (1–8)
                 </span>
               </div>
             </div>
@@ -795,7 +981,7 @@ function App() {
               tabIndex={0}
             />
             <div className="canvasHelp" aria-hidden="true">
-              Tip: Select {isEraser ? "Brush to draw again" : "Eraser to remove strokes"}.
+              Tip: {isShape ? "Drag to preview the shape, then release to commit." : "Try the shape tools for clean geometry."}
             </div>
           </div>
         </section>
