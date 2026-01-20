@@ -61,6 +61,9 @@ function App() {
   const [strokeColor, setStrokeColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(8);
 
+  // Brush/shape opacity (0..1). Eraser intentionally ignores this.
+  const [brushOpacity, setBrushOpacity] = useState(1);
+
   // Shapes fill mode:
   // - Only applies to RECT and CIRCLE.
   // - LINE is always stroke-only.
@@ -517,11 +520,15 @@ function App() {
 
     if (activeTool === TOOL.ERASER) {
       // destination-out punches holes in existing pixels (eraser).
+      // IMPORTANT: eraser ignores opacity; it should always erase fully.
+      ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = "destination-out";
       ctx.strokeStyle = "rgba(0,0,0,1)";
       ctx.fillStyle = "rgba(0,0,0,1)";
     } else {
       ctx.globalCompositeOperation = "source-over";
+      // Apply opacity to brush strokes.
+      ctx.globalAlpha = Math.max(0, Math.min(1, brushOpacity));
       ctx.strokeStyle = strokeColor;
       ctx.fillStyle = strokeColor;
     }
@@ -540,10 +547,16 @@ function App() {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    // Make preview slightly translucent for clarity while dragging.
+    // Base opacity for committed shapes uses the same opacity control as brush strokes.
+    const baseOpacity = Math.max(0, Math.min(1, brushOpacity));
+
+    // Preview: slightly reduce opacity for clarity while dragging, but still respect user opacity.
     if (isPreview) {
       // For fill we keep it a touch more opaque so it's easy to see as a filled region.
-      ctx.globalAlpha = shapeFillMode === "fill" ? 0.6 : 0.75;
+      const previewFactor = shapeFillMode === "fill" ? 0.6 : 0.75;
+      ctx.globalAlpha = baseOpacity * previewFactor;
+    } else {
+      ctx.globalAlpha = baseOpacity;
     }
 
     const x1 = start.x;
@@ -632,6 +645,7 @@ function App() {
       // This mirrors the brush behavior (tap creates a dot) and makes shapes feel responsive.
       ctx.save();
       ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = Math.max(0, Math.min(1, brushOpacity));
       ctx.fillStyle = strokeColor;
       ctx.beginPath();
       ctx.arc(p.x, p.y, Math.max(1, brushSize / 3), 0, Math.PI * 2);
@@ -916,8 +930,40 @@ function App() {
                       width: `${Math.max(6, brushSize)}px`,
                       height: `${Math.max(6, brushSize)}px`,
                       backgroundColor: isEraser ? "#ffffff" : strokeColor,
+                      opacity: isEraser ? 1 : brushOpacity,
                     }}
                   />
+                </div>
+
+                <div className="toolMeta" style={{ marginTop: 2 }}>
+                  <div className="toolLabelRow" style={{ marginBottom: 8 }}>
+                    <span className="toolLabel">Opacity</span>
+                    <span className="toolHint" aria-hidden="true">
+                      {isEraser ? "100%" : `${Math.round(brushOpacity * 100)}%`}
+                    </span>
+                  </div>
+
+                  <label className="rangeLabel">
+                    <span className="srOnly">Opacity slider</span>
+                    <input
+                      type="range"
+                      min={5}
+                      max={100}
+                      step={1}
+                      value={Math.round(brushOpacity * 100)}
+                      onChange={(e) => setBrushOpacity(Number(e.target.value) / 100)}
+                      aria-label="Brush opacity"
+                      disabled={isEraser}
+                    />
+                  </label>
+
+                  <span className="toolMetaText">
+                    {isEraser
+                      ? "Opacity is disabled for eraser."
+                      : isShape
+                        ? "Applies to shape stroke/fill."
+                        : "Applies to brush strokes."}
+                  </span>
                 </div>
               </div>
             </div>
