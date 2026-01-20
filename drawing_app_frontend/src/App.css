@@ -1,104 +1,301 @@
-/* CSS Variables for Theme Management */
+/* Light/modern theme (per provided style guide) */
 :root {
-  /* Light theme colors */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f8f9fa;
-  --text-primary: #282c34;
-  --text-secondary: #61dafb;
-  --border-color: #e9ecef;
-  --button-bg: #007bff;
-  --button-text: #ffffff;
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --text: #111827;
+  --muted: #64748b;
+
+  --primary: #3b82f6;
+  --accent: #06b6d4;
+  --danger: #ef4444;
+
+  --border: rgba(17, 24, 39, 0.10);
+  --shadow: 0 10px 25px rgba(17, 24, 39, 0.08);
+  --shadow-soft: 0 6px 18px rgba(17, 24, 39, 0.06);
+
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 10px;
+
+  --focus: 0 0 0 4px rgba(59, 130, 246, 0.25);
 }
 
 [data-theme="dark"] {
-  /* Dark theme colors */
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #282c34;
-  --text-primary: #ffffff;
-  --text-secondary: #61dafb;
-  --border-color: #404040;
-  --button-bg: #0056b3;
-  --button-text: #ffffff;
+  /* Keep for compatibility; app is intended for light theme */
+  --bg: #0b1220;
+  --surface: #0f172a;
+  --surface-2: #111827;
+  --text: #f8fafc;
+  --muted: rgba(248, 250, 252, 0.65);
+
+  --border: rgba(248, 250, 252, 0.10);
+  --shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+  --shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+* {
+  box-sizing: border-box;
 }
 
 .App {
-  text-align: center;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
   min-height: 100vh;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(59, 130, 246, 0.12), transparent 60%),
+    radial-gradient(900px 500px at 90% 0%, rgba(6, 182, 212, 0.10), transparent 55%),
+    var(--bg);
+  color: var(--text);
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
+.appHeader {
+  padding: 36px 16px 8px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
+.headerText {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0 6px;
 }
 
-.App-header {
-  background-color: var(--bg-secondary);
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: var(--text-primary);
-  transition: background-color 0.3s ease;
-  position: relative;
+.appTitle {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 
-.App-link {
-  color: var(--text-secondary);
-  transition: color 0.3s ease;
-}
-
-.theme-toggle {
-  position: absolute;
-  top: 20px;
-  right: 20px;
-  background-color: var(--button-bg);
-  color: var(--button-text);
-  border: none;
-  border-radius: 8px;
-  padding: 10px 20px;
+.appSubtitle {
+  margin: 10px 0 0;
+  color: var(--muted);
   font-size: 14px;
-  font-weight: 600;
+  line-height: 1.5;
+}
+
+.appMain {
+  padding: 16px;
+}
+
+.panel {
+  max-width: 980px;
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: 1.3fr 1.4fr 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.06), transparent 45%);
+}
+
+.toolGroup {
+  min-width: 0;
+}
+
+.toolLabelRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.toolLabel {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.toolHint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.12), 0 6px 12px rgba(17, 24, 39, 0.10);
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-.theme-toggle:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-  opacity: 0.9;
+.swatch:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.14), 0 8px 16px rgba(17, 24, 39, 0.12);
 }
 
-.theme-toggle:active {
-  transform: translateY(0);
+.swatch.active {
+  box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.12), 0 0 0 6px rgba(59, 130, 246, 0.18);
+  transform: translateY(-1px);
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.brushRow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.brushPresets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.12s ease, border-color 0.12s ease;
+}
+
+.chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.chip.active {
+  background: rgba(59, 130, 246, 0.10);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.rangeLabel input[type="range"] {
+  width: 100%;
+  accent-color: var(--primary);
+}
+
+.brushPreview {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  height: 34px;
+}
+
+.brushDot {
+  display: inline-block;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.08);
+}
+
+.actions .actionButtons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.btn:focus-visible,
+.chip:focus-visible,
+.swatch:focus-visible,
+.canvas:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-soft);
+}
+
+.btn.primary {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 1), rgba(6, 182, 212, 0.95));
+  color: white;
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.btn.secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.canvasWrap {
+  padding: 18px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.02), transparent 35%);
+}
+
+.canvas {
+  display: block;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  background: #ffffff;
+  touch-action: none; /* critical for touch drawing with pointer events */
+  cursor: crosshair;
+}
+
+.canvasHelp {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.appFooter {
+  padding: 16px;
+  text-align: center;
+}
+
+.footerText {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Screen-reader only utility */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Responsive layout */
+@media (max-width: 860px) {
+  .toolbar {
+    grid-template-columns: 1fr;
   }
-  to {
-    transform: rotate(360deg);
+  .actions .actionButtons {
+    width: 100%;
+  }
+  .btn {
+    flex: 1;
   }
 }
 
-/* Responsive design for mobile */
-@media (max-width: 768px) {
-  .theme-toggle {
-    top: 10px;
-    right: 10px;
-    padding: 8px 16px;
-    font-size: 12px;
+@media (max-width: 420px) {
+  .appTitle {
+    font-size: 22px;
   }
 }
