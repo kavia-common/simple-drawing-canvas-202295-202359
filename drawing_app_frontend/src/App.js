@@ -88,14 +88,33 @@ function App() {
 
   const palette = useMemo(
     () => [
+      // Neutrals
       { name: "Ink", value: "#111827" },
-      { name: "Blue", value: "#3b82f6" },
-      { name: "Cyan", value: "#06b6d4" },
       { name: "Slate", value: "#64748b" },
+      { name: "Stone", value: "#78716c" },
+      { name: "Sand", value: "#d6d3d1" },
+
+      // Blues / Teals
+      { name: "Blue", value: "#3b82f6" },
+      { name: "Indigo", value: "#6366f1" },
+      { name: "Cyan", value: "#06b6d4" },
+      { name: "Teal", value: "#14b8a6" },
+
+      // Greens
       { name: "Green", value: "#10b981" },
+      { name: "Emerald", value: "#22c55e" },
+      { name: "Lime", value: "#84cc16" },
+
+      // Warm / Bright
+      { name: "Yellow", value: "#facc15" },
       { name: "Orange", value: "#f59e0b" },
+      { name: "Coral", value: "#fb7185" },
       { name: "Red", value: "#EF4444" },
+
+      // Purples / Pinks
       { name: "Purple", value: "#8b5cf6" },
+      { name: "Violet", value: "#a78bfa" },
+      { name: "Pink", value: "#ec4899" },
     ],
     []
   );
@@ -397,7 +416,7 @@ function App() {
   // - Clear: Delete/Backspace (when not typing), or Ctrl/Cmd+K
   // - Save: Ctrl/Cmd+S
   // - Brush size: [ / ] (decrease/increase)
-  // - Quick colors: 1-8 (palette order) when a color-using tool is active (not eraser)
+  // - Quick colors: 1-9 (palette order) when a color-using tool is active (not eraser)
   useEffect(() => {
     const isTypingTarget = (target) => {
       if (!(target instanceof Element)) return false;
@@ -507,8 +526,8 @@ function App() {
       }
 
       // --- Quick palette colors ---
-      // 1..8 selects palette color (only when not erasing)
-      if (!mod && !e.shiftKey && key.length === 1 && key >= "1" && key <= "8") {
+      // 1..9 selects palette color (only when not erasing)
+      if (!mod && !e.shiftKey && key.length === 1 && key >= "1" && key <= "9") {
         if (activeTool === TOOL.ERASER) return;
         const idx = Number(key) - 1;
         const color = palette[idx]?.value;
@@ -1251,7 +1270,7 @@ function App() {
                 <span className="toolMetaText">
                   Shortcuts: Undo (Ctrl/Cmd+Z), Redo (Ctrl/Cmd+Shift+Z), Save (Ctrl/Cmd+S), Clear
                   (Del/Backspace), Brush (B), Eraser (E), Fill (F), Line (L), Rect (R), Circle (C),
-                  Toggle Brush/Eraser (X), Size ([ / ]), Colors (1–8)
+                  Toggle Brush/Eraser (X), Size ([ / ]), Colors (1–9)
                 </span>
               </div>
             </div>
