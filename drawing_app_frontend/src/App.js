@@ -61,6 +61,11 @@ function App() {
   const [strokeColor, setStrokeColor] = useState("#111827");
   const [brushSize, setBrushSize] = useState(8);
 
+  // Shapes fill mode:
+  // - Only applies to RECT and CIRCLE.
+  // - LINE is always stroke-only.
+  const [shapeFillMode, setShapeFillMode] = useState(/** @type {"stroke" | "fill"} */ ("stroke"));
+
   // Canvas background color (fill). This is baked into exports so saved PNGs match what users see.
   const [backgroundColor, setBackgroundColor] = useState("#ffffff");
 
@@ -94,8 +99,8 @@ function App() {
       { id: TOOL.BRUSH, label: "Brush", hint: "Freehand draw" },
       { id: TOOL.ERASER, label: "Eraser", hint: "Erase pixels" },
       { id: TOOL.LINE, label: "Line", hint: "Draw a straight line" },
-      { id: TOOL.RECT, label: "Rect", hint: "Draw a rectangle outline" },
-      { id: TOOL.CIRCLE, label: "Circle", hint: "Draw a circle outline" },
+      { id: TOOL.RECT, label: "Rect", hint: "Draw a rectangle (stroke or fill)" },
+      { id: TOOL.CIRCLE, label: "Circle", hint: "Draw a circle (stroke or fill)" },
     ],
     []
   );
@@ -537,7 +542,8 @@ function App() {
 
     // Make preview slightly translucent for clarity while dragging.
     if (isPreview) {
-      ctx.globalAlpha = 0.75;
+      // For fill we keep it a touch more opaque so it's easy to see as a filled region.
+      ctx.globalAlpha = shapeFillMode === "fill" ? 0.6 : 0.75;
     }
 
     const x1 = start.x;
@@ -560,10 +566,16 @@ function App() {
       const w = Math.abs(x2 - x1);
       const h = Math.abs(y2 - y1);
 
-      // Avoid tiny accidental rectangles; still allow small ones by leaving threshold low.
       ctx.beginPath();
       ctx.rect(left, top, w, h);
-      ctx.stroke();
+
+      if (shapeFillMode === "fill") {
+        // Filled shapes ignore stroke width by default; we still allow stroke-only via toggle.
+        ctx.fill();
+      } else {
+        ctx.stroke();
+      }
+
       ctx.restore();
       return;
     }
@@ -577,7 +589,13 @@ function App() {
       // Draw an ellipse (circle tool uses ellipse so it behaves intuitively even if drag isn't square).
       ctx.beginPath();
       ctx.ellipse(cx, cy, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2);
-      ctx.stroke();
+
+      if (shapeFillMode === "fill") {
+        ctx.fill();
+      } else {
+        ctx.stroke();
+      }
+
       ctx.restore();
     }
   };
@@ -806,12 +824,46 @@ function App() {
                 })}
               </div>
 
+              {(activeTool === TOOL.RECT || activeTool === TOOL.CIRCLE) && (
+                <div className="toolMeta" style={{ marginTop: 10 }}>
+                  <div className="toolLabelRow" style={{ marginBottom: 8 }}>
+                    <span className="toolLabel">Shape</span>
+                    <span className="toolHint" aria-hidden="true">
+                      {shapeFillMode === "fill" ? "Fill" : "Stroke"}
+                    </span>
+                  </div>
+
+                  <div className="segmented small" role="group" aria-label="Shape fill mode">
+                    <button
+                      type="button"
+                      className={`segBtn small ${shapeFillMode === "stroke" ? "active" : ""}`}
+                      onClick={() => setShapeFillMode("stroke")}
+                      aria-pressed={shapeFillMode === "stroke"}
+                      title="Draw outline only"
+                    >
+                      Stroke
+                    </button>
+                    <button
+                      type="button"
+                      className={`segBtn small ${shapeFillMode === "fill" ? "active" : ""}`}
+                      onClick={() => setShapeFillMode("fill")}
+                      aria-pressed={shapeFillMode === "fill"}
+                      title="Draw filled shape"
+                    >
+                      Fill
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="toolMeta">
                 <span className="toolMetaText">
                   {isEraser
                     ? "Erases existing pixels."
                     : isShape
-                      ? "Click-drag to preview, release to commit."
+                      ? activeTool === TOOL.RECT || activeTool === TOOL.CIRCLE
+                        ? `Click-drag to preview, release to commit (${shapeFillMode}).`
+                        : "Click-drag to preview, release to commit."
                       : "Draws with selected color."}
                 </span>
               </div>

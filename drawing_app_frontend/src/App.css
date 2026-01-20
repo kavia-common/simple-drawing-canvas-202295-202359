@@ -156,6 +156,17 @@
   gap: 8px;
 }
 
+/* Small segmented control (e.g., Stroke vs Fill) */
+.segmented.small {
+  padding: 3px;
+  gap: 3px;
+}
+
+.segBtn.small {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
 /* Segmented tool buttons (for Brush/Eraser/Shapes) */
 .segmented {
   display: inline-flex;
